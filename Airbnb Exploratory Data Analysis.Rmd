@@ -1,0 +1,217 @@
+---
+title: "Airbnb Exploratory Data Analysis"
+date: "2023-03-05"
+author: "Anish Gupta"
+output:
+  html_document:
+   toc: true
+   toc_depth: 2
+   toc_float:
+      collapsed: true
+      smooth_scroll: false
+editor_options:
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(here)
+library(ggplot2)
+library(scales)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(plotly)
+library(countrycode)
+library(corrplot)
+library(RColorBrewer)
+library(ggmap)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read and Prepare data
+```{r}
+airbnb <- read_csv("airbnb_eda.csv")
+glimpse(airbnb)
+
+airbnb_numeric <- airbnb %>%
+  na.omit() %>%
+  select(-id, -name, -host_id, -host_name, -neighbourhood_group, -neighbourhood, -room_type, -last_review, -Location)
+
+```
+After reading the data and exploring the dataset, we see that 17 variables and 39118 observations. It looks like there are some missing values in the columns reviews_per_month, last_review.
+
+# A basic function
+This function returns the mean, median and standard deviation of a variable
+```{r}
+
+explore<-function(x){
+  data<-c("Mean"=mean(x, na.rm=T),
+          "Median"=median(x, na.rm =T), 
+          "Standard Deviation" = sd(x, na.rm =T),
+          "Length" = length(x))
+  return(data)
+}
+```
+
+
+# Visuallize Correlation Matrix
+```{r}
+
+corrplot(cor(airbnb_numeric))
+```
+There does not seem to be a high correlation between price and the other numeric variables.
+
+# Summary Statistics
+```{r}
+summary(airbnb)
+```
+The summary statistics here give us a better understanding of the dataset.We can see that the mean price is $140 and a median price of $99. The maximum price is $10,000 so we can expect a large number of outliers. The mean number of reviews are 23 with mean reviews per month at 1.375. The mean of the minimum number of nights people are required to stay at a place is 7 and the median is 2. This also indicates a huge number of outliers. 
+
+# Histogram of Price Distribution
+
+```{r}
+airbnb %>%
+  ggplot() +
+  geom_histogram(aes(x = price),fill = "blue", color = "black", bins = 30, binwidth = 100)
+ggplotly()
+```
+
+From the histogram of price we can see that the histogram is right skewed. Most of the prices are in the range of 0 to 200. 
+
+# A second histogram with prices in the 0-200 range. 
+
+```{r}
+airbnb %>%
+  filter(price <= 200) %>%
+  ggplot() +
+  geom_histogram(aes(x = price),fill = "blue", color = "black", bins = 20, binwidth = 15)
+ggplotly()
+```
+This histogram is a little more normally distributed than the previous one. Most of the rental prices seem to be around 50 to 100. 
+
+
+# Scatterplot of minium nights vs price
+```{r}
+airbnb %>%
+  ggplot(aes(x= minimum_nights, y=price)) +
+  geom_point(color = "orange") + 
+  ggtitle("Price by Minimum Nights") +
+  ylab("Price") +
+  xlab("Minimum Nights")+
+  theme(plot.title = element_text(hjust = 0.5))
+  
+```
+
+# Hypothesis Testing 1
+Null Hypothesis: Mean Airbnb rental price in Manhattan = Mean Airbnb rental price in Brookyln 
+Alternative Hypothesis: Mean Airbnb rental price in Manhattan > Mean Airbnb rental price in Brookyln 
+
+```{r}
+airbnb_manhattan <- airbnb %>%
+  subset(neighbourhood_group == "Manhattan" ,na.rm = TRUE)
+
+airbnb_brooklyn <- airbnb%>%
+  subset(neighbourhood_group == "Brooklyn" ,na.rm = TRUE)
+
+
+#Call the Explore Function and get the Mean, Median, Standard Deviation, and Length.
+airbnb_manhattan_exp <- explore(airbnb_manhattan$price)
+airbnb_manhattan_exp[1]
+airbnb_brooklyn_exp <- explore(airbnb_brooklyn$price)
+airbnb_brooklyn_exp[1]
+
+#Calculate the SD, z-score and p-values
+sd_manhattan_brooklyn <- sqrt(airbnb_manhattan_exp[3]^2/airbnb_manhattan_exp[4] +airbnb_brooklyn_exp[3]^2/airbnb_brooklyn_exp[4])
+z_score <- (airbnb_manhattan_exp[1]-airbnb_brooklyn_exp[1])/sd_manhattan_brooklyn
+#z_score
+print(paste("z-score", z_score))
+
+print(paste("p-value", 1-pnorm(z_score)))
+
+
+```
+Since the P-value is less than the threshold of 0.05, we can reject the Null Hypothesis and accept the Alternate Hypothesis.
+
+## Explore Price by Neighborhood_Group 
+```{r}
+airbnb %>%
+  group_by(neighbourhood_group)%>%
+  summarise(mean_price = mean(price)) %>%
+  ggplot(aes(fill = neighbourhood_group, y = mean_price, x = neighbourhood_group)) +
+  geom_bar(stat = "identity") +
+  xlab("Neigborhood Group") +
+  ylab("Price") +
+  ggtitle("Airbnb Price by Neighborhood Group") +
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 45)) 
+ggplotly()
+```
+
+Both the p-value and the bar graph showing Price by Neighborhood group supports the alternate hypothesis and rejects the null hypothesis.We can conclude Manhattan is more expensive than Brooklyn. From the bar graph Manhattan is the most expensive neighborhood group.
+
+## Explore Price by Neighborhood group by Room Type
+```{r}
+airbnb %>%
+  group_by(neighbourhood_group,room_type) %>%
+  summarise(mean_price = mean(price)) %>%
+  ggplot(aes(fill = room_type, y = mean_price, x = neighbourhood_group)) +
+  geom_bar(position="dodge",stat = "identity") +
+  xlab("Neigborhood Group") +
+  ylab("Price") +
+  ggtitle("Airbnb Price by Neighborhood Group and Room Type") +
+  theme(plot.title = element_text(hjust = 0.5),axis.text.x = element_text(angle = 45)) +
+  scale_fill_brewer(type = "qual", palette = 3)
+ggplotly()
+```
+From this graph, we can clearly see that entire home/apt is the most expensive of all the room types across all the neighborhoods. Private rooms and Shared rooms appear to be closer in price.
+
+# Hypothesis Testing 2
+Null Hypothesis: Mean Airbnb rental price for private room = Mean Airbnb rental price for shared room 
+Alternative Hypothesis: Mean Airbnb rental price for private room > Mean Airbnb rental price for shared room
+
+```{r}
+airbnb_private_room <- airbnb %>%
+  subset(room_type == "Private room" ,na.rm = TRUE)
+
+airbnb_shared_room <- airbnb%>%
+  subset(room_type == "Shared room" ,na.rm = TRUE)
+
+
+#Call the Explore Function and get the Mean, Median, Standard Deviation, and Length.
+airbnb_private_room_exp <- explore(airbnb_private_room$price)
+airbnb_private_room_exp[1]
+airbnb_shared_room_exp <- explore(airbnb_shared_room$price)
+airbnb_shared_room_exp[1]
+
+#Calculate the SD, z-score and p-values
+sd_private_shared <- sqrt(airbnb_private_room_exp[3]^2/airbnb_private_room_exp[4] +airbnb_shared_room_exp[3]^2/airbnb_shared_room_exp[4])
+z_score <- (airbnb_private_room_exp[1]-airbnb_shared_room_exp[1])/sd_private_shared
+#z_score
+print(paste("z-score", z_score))
+
+print(paste("p-value", 1-pnorm(z_score)))
+
+
+```
+Since the P-value is less than the threshold of 0.05, we can reject the Null Hypothesis and accept the Alternate Hypothesis.
+
+# Generate Boxplots showing the Price by Room Type. 
+Filtering out prices greater that $500 as most prices are in the range of $0-$200 and anything beyond 500 should be outliers
+```{r Boxplot}
+
+airbnb %>%
+  filter(price <=500) %>%
+  ggplot(aes(room_type, price, fill = room_type)) +
+  geom_boxplot() +
+  xlab("Room Type") +
+  ylab("Price") +
+  ggtitle("Price by Room Type") +
+  theme(plot.title = element_text(hjust = 0.5), legend.position="none") 
+  
+ggplotly()
+
+```
+The above box plots show that the median price of entire home/apt is greatest and the private room is greater than shared room. However, there are a huge number of outliers in each categories. 
