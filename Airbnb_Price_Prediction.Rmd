@@ -1,0 +1,684 @@
+---
+title: "Price_Prediction_Initial_Draft"
+date: "2023-05-01"
+author: "Anish Gupta"
+output:
+  html_document:
+   toc: true
+   toc_depth: 2
+   toc_float:
+      collapsed: true
+      smooth_scroll: false
+editor_options:
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(here)
+library(ggplot2)
+library(scales)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(plotly)
+library(countrycode)
+library(corrplot)
+library(RColorBrewer)
+library(ggmap)
+library(rpart)
+library(rpart.plot)
+library(ISLR)
+library(leaps)
+library(lars)
+library(moderndive)
+library(randomForest)
+library(caret)
+library(Metrics)
+library(reshape2)
+library(xgboost)
+library(lubridate)
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Prepare Data
+
+## Read the data
+```{r}
+airbnb_original <- read_csv("airbnb_eda.csv")
+glimpse(airbnb_original)
+```
+
+## Feature Engineering: Part 1
+```{r}
+#Summary of airbnb
+summary(airbnb_original)
+
+#Convert neighbourhood_group, neighborhood and room_type to factor.
+airbnb_original$neighbourhood_group<- as.factor(airbnb_original$neighbourhood_group)
+airbnb_original$neighbourhood<- as.factor(airbnb_original$neighbourhood)
+airbnb_original$room_type<- as.factor(airbnb_original$room_type)
+
+airbnb_original %>% 
+     sapply(levels)
+
+#Create new numeric variables from the factor variables neighbourhood_group, neighborhood and room_type to factor.
+airbnb_original <- airbnb_original %>%
+  mutate(neighbourhood_group_numeric=ifelse(neighbourhood_group == "Bronx", 1, ifelse(neighbourhood_group == "Brooklyn",2,ifelse(neighbourhood_group == "Manhattan",3,ifelse(neighbourhood_group == "Queens",4,5)))))
+
+airbnb_original <- airbnb_original %>%
+  mutate(room_type_numeric=ifelse(room_type == "Entire home/apt",1,ifelse(room_type == "Private room",2,3)))
+
+airbnb_original <- airbnb_original %>%
+  mutate(neighbourhood_numeric=as.numeric(neighbourhood))
+
+#Convert last_review date to a date format.
+airbnb_original <- airbnb_original %>%
+  mutate(last_review = ifelse(is.na(last_review),"01/01/2000",last_review))%>%
+  mutate(last_review = mdy(last_review))
+
+#Replacing NA values for reviews_per_month with 0.
+airbnb_original <- airbnb_original %>%
+  mutate(reviews_per_month = ifelse(is.na(reviews_per_month), 0, reviews_per_month))
+```
+## Feature Engineering: Part 2
+```{r}
+#Drop columns that will not be useful in the price prediction
+#name: The name of the host cannot have any impact on the price prediction
+#host_id: It is just an id assigned to a host. It does not have any impact on the price
+#last_review: The last review column is being dropped as it may not have an impact on price. 
+#Location: It is the address of the place and since we are using latitude and longitude, I feel this is not needed to predict the price.
+#View(airbnb_original)
+
+airbnb <- airbnb_original %>%
+  select(-name, -host_id, -host_name, -last_review, -Location)
+```
+
+## Feature Engineering Part 3
+```{r}
+#summary of airbnb variables
+summary(airbnb)
+
+#Checking for and removing outliers
+airbnb %>%
+  select_if(is.numeric) %>%
+  select(-id) %>%
+  gather(yval, val, -price) %>%
+  ggplot(aes(price, val)) +
+  geom_point() +
+  facet_grid(yval~.)
+
+airbnb <- subset(airbnb, airbnb$price > 0 & airbnb$price < 7500)
+
+airbnb %>%
+  ggplot(aes(price,number_of_reviews))+
+  geom_point()
+
+airbnb %>%
+  ggplot(aes(price,reviews_per_month))+
+  geom_point()
+
+airbnb <- subset(airbnb, airbnb$reviews_per_month < 30)
+
+airbnb %>%
+  ggplot(aes(price,minimum_nights))+
+  geom_point()
+
+airbnb <- subset(airbnb, airbnb$minimum_nights < 600)
+```
+
+## Feature Engineering Part 4
+```{r}
+#Create Plots to check the relationship between Price and the other variables and apply transformations where necessary
+airbnb %>%
+  ggplot(aes(x=price)) + geom_histogram(color="white")
+
+airbnb %>%
+  ggplot(aes(x=log(price))) + geom_histogram(color="white")
+
+airbnb%>%
+  ggplot(aes(x=minimum_nights)) + geom_histogram(color="white")
+
+model1 <- lm(data=airbnb, price ~ minimum_nights )
+get_regression_table(model1)
+
+points<-get_regression_points(model1)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+
+#Transforming the price and minimum nights to log form as they are right skewed.
+airbnb<-airbnb %>%
+  mutate(lnprice=log(price), lnmin_nights=log(minimum_nights))
+
+ggplot(data=airbnb, aes(x=lnprice)) + geom_histogram(color="white")
+ggplot(data=airbnb, aes(x=lnmin_nights)) + geom_histogram(color="white")
+
+head(airbnb)
+model1 <- lm(data=airbnb, lnprice ~ lnmin_nights)
+
+get_regression_table(model1)
+
+points<-get_regression_points(model1)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=lnprice_hat, y=residual)) + geom_point()
+
+#Create some tables and some boxplots for the factor variables
+table(airbnb$neighbourhood_group)
+table(airbnb$neighbourhood)
+table(airbnb$room_type)
+
+ggplot(data=airbnb, aes(y=lnprice,fill= neighbourhood_group)) + geom_boxplot()
+ggplot(data=airbnb, aes(y=lnprice,fill=room_type)) + geom_boxplot()
+ggplot(data=airbnb, aes(y=lnprice,fill=neighbourhood)) + geom_boxplot()
+
+#Creating scatterplots for the numeric variables
+ggplot(data=airbnb, aes(x=lnmin_nights, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=longitude, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=latitude, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=floor, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=`noise(dB)`, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=number_of_reviews, y=lnprice)) + geom_point()
+ggplot(data=airbnb, aes(x=reviews_per_month, y=lnprice)) + geom_point()
+#Running the lnprice vs number_of_reviews resulted in a cone shaped graph and so plotting against log(number_of_reviews)
+ggplot(data=airbnb, aes(x=log(number_of_reviews), y=lnprice)) + geom_point()
+#Running the lnprice vs reviews_per_month resulted in a cone shaped graph and so plotting against log(reviews_per_month)
+ggplot(data=airbnb, aes(x=log(reviews_per_month), y=lnprice)) + geom_point()
+```
+
+
+
+## Feature Engineering Part 5
+```{r}
+#Create a numeric dataframe for models that require numeric only or perform better with numeric variables
+airbnb_numeric <- airbnb %>%
+  select(-neighbourhood_group,-neighbourhood,-room_type)
+```
+
+
+
+## Checking to see how a model works with and without the log transformed variables
+```{r}
+model0<-lm(price~neighbourhood_group + neighbourhood+ latitude + longitude + room_type + number_of_reviews + reviews_per_month + floor + `noise(dB)` + minimum_nights,airbnb)
+
+get_regression_summaries(model0)
+get_regression_table(model0)
+points<-get_regression_points(model0)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+
+model1 <- lm(data=airbnb, lnprice ~ neighbourhood_group +neighbourhood+ latitude + longitude + room_type + number_of_reviews + reviews_per_month + floor + `noise(dB)` + lnmin_nights )
+get_regression_table(model1)
+
+get_regression_summaries(model1)
+points<-get_regression_points(model1)
+points
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=lnprice_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+
+```
+
+# Visualize Correlation Matrix
+```{r}
+glimpse(airbnb_numeric)
+
+corrplot(cor(airbnb_numeric[,-1]))
+```
+
+# Modeling
+
+## Split the dataset into test and train.
+```{r}
+#make this example reproducible
+set.seed(1)
+
+#use 70% of dataset as training set and 30% as test set
+sample <- sample(c(TRUE, FALSE), nrow(airbnb), replace=TRUE, prob=c(0.7,0.3))
+airbnb_train  <- airbnb[sample, ]
+airbnb_test   <- airbnb[!sample, ]
+
+#The following R code sets all observations in our test data set to NA that contain the additional level that didn’t exist in our train data:
+airbnb_test_new <- airbnb_test                                # Duplicate test data set
+airbnb_test_new$neighbourhood[which(!(airbnb_test_new$neighbourhood %in% unique(airbnb_train$neighbourhood)))] <- NA  # Replace new levels by NA
+airbnb_test_new 
+
+#use 70% of dataset as training set and 30% as test set
+sample_numeric <- sample(c(TRUE, FALSE), nrow(airbnb_numeric), replace=TRUE, prob=c(0.7,0.3))
+airbnb_train_numeric  <- airbnb_numeric[sample_numeric, ]
+airbnb_test_numeric   <- airbnb_numeric[!sample_numeric, ]
+
+#Get the train and test ID
+train_id <- data.frame(ID = airbnb_train_numeric$id)
+test_id  <- data.frame(ID = airbnb_test_numeric$id)
+
+#Dropping the Id columns
+airbnb_train_numeric <- airbnb_train_numeric[,-1]
+airbnb_test_numeric  <- airbnb_test_numeric[,-1]
+
+#Creating X train and test datasets and Y train and test datasets for the random forest model
+X_train <- airbnb_train_numeric[, -c(3,12,13)]#Drop the dependent variables which are price and lnprice and create the X_train dataframe.
+Y_train <- airbnb_train_numeric[, 3]#Select the price and create the Y_train dataframe.
+
+X_test <- airbnb_test_numeric[, -c(3,12,13)]#Drop the dependent variables which are price and lnprice and create the X_test dataframe.
+
+Y_test <- airbnb_test_numeric[, 3]#Select the price and create the Y_test dataframe.
+
+#The following steps are specifically for the xgboost model
+#Change target variable as a numeric vector and the rest of train dataset into matrix form.
+train_mat<-as.matrix(X_train)
+mode(train_mat)<-'double' #coerce categorical variables to change to numeric.
+
+#Change target variable as a numeric vector and the rest of test dataset into matrix form.
+test_mat<-as.matrix(X_test)
+mode(test_mat)<-'double' #coerce categorical variables to change to numeric.
+```
+
+## Model 1: OLS Linear Regresssion
+```{r}
+model.ols<-lm(price ~ neighbourhood_group + neighbourhood+latitude + longitude + room_type + number_of_reviews + floor + `noise(dB)` + minimum_nights +  room_type*neighbourhood_group+ floor*neighbourhood_group + floor*room_type+  neighbourhood*floor+ room_type*neighbourhood+ neighbourhood_group*neighbourhood,airbnb_train)
+
+
+get_regression_summaries(model.ols)
+get_regression_table(model.ols)
+points<-get_regression_points(model.ols)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+
+
+airbnb.predictions <- predict(model.ols,airbnb_test_new)
+#airbnb.predictions
+
+#result_test <- data.frame(ID = airbnb_test_new$id,
+                           #price = exp(airbnb_test_new$lnprice),
+                    #predictions = exp(airbnb.predictions))
+
+result_test <- data.frame(ID = airbnb_test_new$id,
+                          price = airbnb_test_new$price,
+                          predictions = airbnb.predictions)
+write.csv(result_test,file = "C:/Users/anish/Documents/Data Science Capstone/predicitions_airbnb_ols.csv")
+
+```
+
+
+## Model 2 AIC
+```{r}
+null <- lm(price~1, data = airbnb_train)
+full <- lm(price ~ neighbourhood_group +neighbourhood+ latitude + longitude + room_type + number_of_reviews + reviews_per_month + floor + `noise(dB)` + minimum_nights, data = airbnb_train)
+
+step(null, scope =list(lower=null, upper= full), direction = "both")
+
+
+airbnb_model_aic<-lm(formula = price ~room_type + neighbourhood + floor + `noise(dB)` + 
+    number_of_reviews + longitude, data = airbnb_train)
+
+get_regression_summaries(airbnb_model_aic)
+get_regression_table(airbnb_model_aic)
+points<-get_regression_points(airbnb_model_aic)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+
+
+airbnb.predictions <- predict(airbnb_model_aic,airbnb_test_new)
+#airbnb.predictions
+
+```
+
+## Model 3 Random Forest
+```{r}
+#Run the random forest model
+randomforest_model <- randomForest(price~neighbourhood_group_numeric +neighbourhood_numeric+ latitude + longitude + room_type_numeric + minimum_nights  + number_of_reviews + floor  + minimum_nights,data = airbnb_train_numeric)
+
+# View the forest results.
+print(randomforest_model) 
+
+# Importance of each predictor.
+print(importance(randomforest_model,type = 2)) 
+
+#Predict the price based on X_train.
+pred_train <- predict(randomforest_model, X_train)
+
+#Create a dataframe with the train_id, the actual price, and the predicted price. 
+result_train <- data.frame(ID = train_id, 
+                     price = Y_train,
+                    predictions = pred_train)
+#Print the head of the dataframe result_train.
+head(result_train)
+
+
+#Predict the price based on X_test.
+pred_test <- predict(randomforest_model, airbnb_test_numeric)
+
+#Create a dataframe with the test_id, the actual price, and the predicted price. 
+result_test <- data.frame(ID = test_id, 
+                          price = Y_test,
+                    predictions = pred_test)
+
+
+write.csv(result_test,file = "C:/Users/anish/Documents/Data Science Capstone/predicitions_airbnb_rf.csv")
+#Print the head of the dataframe result_train.
+head(result_test)
+
+print(paste0('Test RMSE: ' , rmse(result_test$price,
+                                  result_test$predictions))) #testRMSE
+
+print(paste0('Train RMSE: ' , rmse(result_train$price,
+                                  result_train$predictions))) 
+
+print(paste0('Test R2: ' ,
+             caret::postResample(result_test$predictions , result_test$price)['Rsquared']))
+
+print(paste0('Train R2: ' ,
+             caret::postResample(result_train$predictions , result_train$price)['Rsquared']))
+
+
+ggplot(result_test, aes(x = predictions, y = price)) + geom_point() +
+  geom_smooth()
+
+melt_pred_test <- melt(head(result_test,20), id.vars = "ID")
+
+ggplot(melt_pred_test, 
+       aes(y = value, 
+           x = ID,
+           colour = variable)) +
+      geom_point() +
+      geom_line() +
+  ggtitle("Actual vs Predicted for Test Data")
+
+
+```
+
+## Model 4: Extreme Gradient Boosting(XG Boost)
+```{r}
+#Preparing two matrices for xgb
+dtrain <- xgb.DMatrix(data = train_mat, label = airbnb_train_numeric$price)
+dtest <- xgb.DMatrix(data = test_mat, label = airbnb_test_numeric$price)
+
+#Run xgboost
+bst <- xgboost(data = dtrain, max.depth = 5, eta = 1, nround = 1000)
+bst
+
+#Generate prediction on the test dataset with the model.
+preds <- predict(bst, dtest)
+#preds
+
+#Calculate RMSE
+err <- preds-airbnb_test_numeric$price
+rmse <- sqrt(sum(err)^2/nrow(airbnb_test_numeric))
+
+#Create a dataframe with the test_id, the actual price, and the predicted price. 
+result_test <- data.frame(ID = test_id, 
+                     price = airbnb_test_numeric$price,
+                    predictions = preds)
+
+#Print the results 
+print(paste("test-error=", rmse))
+
+print(paste0('Test R^2: ' ,
+             caret::postResample(result_test$predictions , result_test$price)['Rsquared']))
+
+#On Test Data Change to Pivot longer.
+melt_pred_test <- melt(head(result_test,100), id.vars = "ID")
+
+ggplot(melt_pred_test, 
+       aes(y = value, 
+           x = ID,
+           colour = variable)) +
+      geom_point() +
+      geom_line() +
+  ggtitle("Actual vs Predicted for Test Data")
+
+```
+
+
+
+## Model 5: Leaps and Lars Model
+
+
+### Function to build second order matrix for x variables
+```{r}
+#Builds second order terms for x values.
+matrix.2ndorder.make<-function(x, only.quad=F){
+  x0<-x
+  dimn<-dimnames(x)[[2]] #extract the names of the variables
+  num.col<-length(x[1,]) # how many columns
+  for(i in 1:num.col){
+    # if we are doing all 2nd order
+    if(!only.quad){
+      for(j in i:num.col){
+        x0<-cbind(x0,x[,i]*x[,j])
+        dimn<-c(dimn,paste(dimn[i],dimn[j],sep=""))
+        #create interaction dimension names
+
+      }
+    }
+    else{
+        #in here only if doing only squared terms
+        x0<-cbind(x0,x[,i]*x[,i])
+        dimn<-c(dimn,paste(dimn[i],"2",sep="")) # squared dimension names
+    }
+  }
+  dimnames(x0)[[2]]<-dimn
+  x0
+}
+
+```
+
+
+### A Leaps automatic model selector using Cp, and PRESS
+### Best k models using Cp and from those k calculate best PRESS
+
+### Leaps then Press
+```{r}
+#names function, takes two variables
+regpluspress<-function(x,y){
+ str<-lsfit(x,y) #Saves lsfit output to str.
+ press<-sum((str$resid/(1-hat(x)))^2)
+str$press<-press #Saves PRESS statistic to str
+str #Calls str
+}
+#Takes parameters
+leaps.then.press<-function(xmat,yvec,ncheck=10,print.ls=F)
+{
+    leaps.str<-leaps(xmat,yvec) #Runs through leaps and saves output to leaps.str
+    z1<-leaps.str$Cp #extract Cp
+    o1<-order(z1) #Order it
+    matwhich<-(leaps.str$which[o1,])[1:ncheck,] #pullout ncheck best models with respect to Cp.
+    z2<-z1[o1][1:ncheck] #Saves lowest cp values to z2
+    pressvec<-NULL
+    for(i in 1:ncheck){ #A for loop from 1 to number of checks
+      ls.str0<-regpluspress(xmat[,matwhich[i,]],yvec) #Saves PRESS statistics from lowest Cp list 
+      if(print.ls){#If called, then it will print ls.str0
+          ls.print(ls.str0)
+      }
+      print(i) #Prints iteration
+      print(paste("Press=",ls.str0$press)) #Prints PRESS stat
+      parvec<-matwhich[i,] #Saves matrix row to vector
+      npar<-sum(parvec) #Sums vector values to npar (sums 1 and 0 values) 
+      print(paste("MPSE=",ls.str0$press/(length(yvec)-(npar+1)))) #Prints the mean squared prediction error
+      print(paste("Cp=",z2[i])) #Prints Cp value
+      pressvec<-c(pressvec, ls.str0$press)
+      if(i==1){
+        Xmat<-(xmat)[,leaps.str$which[o1[1],]]
+        coef1<-lsfit(Xmat,yvec)$coef
+        print("coef1=")
+        print(coef1)
+        leaps.pred<-Xmat%*%coef1[-1]+coef1[1]
+        plot(leaps.pred,yvec)
+        print("Correlation between leaps prediction and actual yvec")
+        print(cor(leaps.pred,yvec))
+      }
+    }
+    o2<-order(pressvec) #Output results
+    print("which matrix:")
+    matwhich[o2,] #model indicators sorted from best press to worst in top ncheck Cp
+    print("matwhich 1")
+    matwhich[o2[1]]
+        
+}
+
+```
+
+### And a lars automatic model selector using both Cp and cross validation MSE
+### lars selection program
+```{r}
+#Function to generate sum of the absolute values of a vector.
+sumabs<-function(v1)
+{sum(abs(v1))}
+
+#lars select function. This is a lars automatic model selector using both Cp and cross validation MSE
+lars.select<-
+function(xmat,y,ncheck=10,int=F)
+{
+        lasso.str<-lars(xmat,y,intercept=int) #Calls lars, saves output to lasso.str
+        #plot(lasso.str)
+        #print(xmat)
+        cv.str<-cv.lars(xmat,y,plot.it=F,intercept=int) #Calculates cross-validated error curve for lars
+        o1<-order(cv.str$cv) #Orders cv values from lowest to highest
+        mindex<-cv.str$index[o1][1] #Index of cv values ordered
+        beta<-coef(lasso.str) #Saves coefficients from lasso.str to beta
+        index0<-apply(beta,1,sumabs) #Iterates through rows, sums absolute values of beta (sum of squares)
+        index0<-index0/max(index0) #Sums of beta divided by max sum of beta, percentage (0 to 1)
+        o1<-order(abs(index0-mindex)) #Orders values subtracted by the minimum cv value
+        I1<-(abs(index0-mindex)==min(abs(index0-mindex)))#If absolute value of index-mindex is the min, add to I1
+        n1<-length(beta[,1]) #Saves int, length of column of coefficients
+        beta.out<-beta[I1,] #Beta.out is minimum rows of coefficients
+        if(sum(abs(beta.out))==0){ #If all values add to zero, then sort list by the Cp value
+                v1<-lasso.str$Cp
+                o2<-order(v1)
+                beta.out<-beta[o1[1:ncheck],]
+        }
+        Ind.out<-beta.out!=0 #Saves Ind.out as values of beta.out that don't equal 0
+        outlist<-list(beta.out=beta.out,ind.out=Ind.out)#Saves list of beta.out, ind.out values
+        if(int){#finds y-intercept values.
+                Int.out1<-mean(y)-mean(xmat%*%beta.out[i]) #mean of y-value minus mean of x-matrix times beta coefficients
+                outlist<-list(beta.out=beta.out,ind.out=Ind.out,int.out=Int.out1)
+        }       
+        outlist #Returns outlist to end function
+}
+
+```
+
+
+### Combine leaps and lars in a single function
+```{r}
+#Combine function calling leaps.then.press and lars.select
+combined.leaps.lars<-function(both = F,leaps = F, lars = F,xmat,yvec,ncheck=10,int=F)
+{ 
+ #if(both==TRUE){par(mfrow=c(2,1))}else{par(mfrow=c(1,1))}
+ if(both){
+    leaps.output<-leaps.then.press(xmat,yvec,ncheck,int)
+    lars.output<-lars.select(xmat,yvec)
+    plot(xmat%*%lars.output$beta.out,yvec) #Actual Price vs predicted Price
+    print("Correlation between predicted Price and actual Price Lars")
+    print(cor(xmat%*%lars.output$beta.out,yvec)) #correlation
+    #Combine leaps and lars output in a list 
+    lars.leaps.output<-list(leaps.output=leaps.output,lars.output=lars.output)
+    #Return the output
+    lars.leaps.output
+ }
+  else if(leaps){
+    leaps.output<-leaps.then.press(xmat,yvec,ncheck,int)
+    leaps.output
+  }
+  else if(lars){
+    lars.output<-lars.select(xmat,yvec)
+    plot(xmat%*%lars.output$beta.out,yvec) #Actual Price vs predicted Price
+    print("Correlation between predicted Price and actual Price Lars")
+    print(cor(xmat%*%lars.output$beta.out,yvec)) #correlation
+    lars.output
+  }
+  
+
+}
+```
+
+### Build second order matrix
+
+```{r}
+#Creating a matrix from the data
+airbnb_numeric_mat<-as.matrix(airbnb_numeric)
+#Output the first 5 rows
+airbnb_numeric_mat[1:5,]
+
+#Linear fit
+ls.print(lsfit(airbnb_numeric_mat[,c(-3,-11)],airbnb_numeric_mat[,3]))
+# From the linear fit we can see that  reviews_per_month is not a good predictor because p-value is greater than 0.05.
+
+
+#Make second order matrix of the x values but drop id, price,lnprice,latitude, longitude,lnmin_nights, reviews_per_month,neighborhood
+airbnb_numeric_mat2nd<-matrix.2ndorder.make(airbnb_numeric_mat[,c(-1,-2,-3,-4,-7,-13,-14,-12)])#Second order matrix for x variables
+airbnb_numeric_mat2nd[1:5,]
+
+#dim(airbnb_numeric_mat2nd)
+
+```
+
+
+
+### Call leaps and lars
+```{r}
+#Run combined.leap.lars function for full
+results.leaps.lars<-combined.leaps.lars(both = F,leaps = T,lars = F,airbnb_numeric_mat2nd,airbnb_numeric_mat[,4])
+#results.leaps.lars
+
+#Run combined.leap.lars function for full 
+results.leaps.lars<-combined.leaps.lars(both = F,leaps = F,lars = T,airbnb_numeric_mat2nd,airbnb_numeric_mat[,4])
+#results.leaps.lars
+
+#airbnb_numeric_mat
+
+```
+
+
+### Build the linear model on the output of leaps variable selection. Run predictions on the test data and write to a .csv file.
+```{r}
+linear.airbnb<-lm(price ~ minimum_nights +floor + `noise(dB)` + neighbourhood_group_numeric +  room_type_numeric + I(minimum_nights^2) + minimum_nights*floor +  minimum_nights*`noise(dB)` + minimum_nights*neighbourhood_group_numeric + minimum_nights*room_type_numeric + number_of_reviews*number_of_reviews + number_of_reviews*floor + number_of_reviews*neighbourhood_group_numeric + number_of_reviews*room_type_numeric + I(floor^2) + floor*`noise(dB)` + floor*neighbourhood_group_numeric + floor*room_type_numeric + I(`noise(dB)`^2) + `noise(dB)`*neighbourhood_group_numeric + `noise(dB)`*room_type_numeric + I(neighbourhood_group_numeric^2) + neighbourhood_group_numeric*room_type_numeric +  I(room_type_numeric^2), data = airbnb_train_numeric)
+
+
+get_regression_summaries(linear.airbnb)
+get_regression_table(linear.airbnb)
+points<-get_regression_points(linear.airbnb)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+
+airbnb.predictions <- predict(linear.airbnb,airbnb_test)
+#write.csv(airbnb.predictions,file = "C:/Users/anish/Documents/predicitions_airbnb.csv")
+```
+
+### Build the linear model on the output of lars variable selection. Run predictions on the test data and write to a .csv file.
+```{r}
+linear.airbnb<-lm(price ~ minimum_nights + number_of_reviews + floor + `noise(dB)` + neighbourhood_group_numeric + room_type_numeric + I(minimum_nights^2) + minimum_nights*number_of_reviews + minimum_nights*floor + minimum_nights*`noise(dB)` + minimum_nights*neighbourhood_group_numeric +  minimum_nights*room_type_numeric + I(number_of_reviews^2) + number_of_reviews*floor + number_of_reviews*`noise(dB)` +  number_of_reviews*neighbourhood_group_numeric + number_of_reviews*room_type_numeric + I(floor^2) + floor*`noise(dB)` + floor*neighbourhood_group_numeric + floor*room_type_numeric + I(`noise(dB)`^2) + `noise(dB)`*room_type_numeric + I(neighbourhood_group_numeric^2) + neighbourhood_group_numeric*room_type_numeric + I(room_type_numeric^2), data = airbnb_train_numeric)
+
+get_regression_summaries(linear.airbnb)
+get_regression_table(linear.airbnb)
+points<-get_regression_points(linear.airbnb)
+ggplot(data=points, aes(x=residual)) + geom_histogram(color="white")
+ggplot(data=points, aes(x=price_hat, y=residual)) + geom_point()
+points %>%
+  ggplot(aes(sample = residual)) +
+  stat_qq() +
+  stat_qq_line()
+```
+
+
